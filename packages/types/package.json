@@ -1,0 +1,26 @@
+{
+  "name": "@stellar-orbit/types",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "lint": "eslint .",
+    "type-check": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@stellar-orbit/config-eslint": "workspace:*",
+    "@stellar-orbit/config-typescript": "workspace:*",
+    "eslint": "^9.16.0",
+    "typescript": "^5.7.2"
+  }
+}
