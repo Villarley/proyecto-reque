@@ -1,0 +1,22 @@
+{
+  "name": "@stellar-orbit/config-typescript",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "base.json",
+    "nextjs.json",
+    "node.json"
+  ],
+  "exports": {
+    "./base": "./base.json",
+    "./nextjs": "./nextjs.json",
+    "./node": "./node.json"
+  },
+  "scripts": {
+    "dev": "node -e \"process.stdin.resume()\"",
+    "build": "node -e \"process.exit(0)\""
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
