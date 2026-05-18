@@ -1,0 +1,37 @@
+{
+  "name": "@stellar-orbit/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "lint": "eslint .",
+    "type-check": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "tailwindcss": "^3.4.0"
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.1.1",
+    "@stellar-orbit/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@stellar-orbit/config-eslint": "workspace:*",
+    "@stellar-orbit/config-typescript": "workspace:*",
+    "@types/react": "^19.0.1",
+    "eslint": "^9.16.0",
+    "react": "^19.0.0",
+    "tailwindcss": "^3.4.16",
+    "typescript": "^5.7.2"
+  }
+}
