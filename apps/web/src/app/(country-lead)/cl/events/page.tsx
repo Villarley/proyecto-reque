@@ -3,11 +3,15 @@
 import type { Event, EventCategory } from "@stellar-orbit/types";
 import { Button, Card } from "@stellar-orbit/ui";
 import Link from "next/link";
+import QRCode from "qrcode";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { ApiError, apiFetchWithAuth } from "@/lib/api";
+import { useI18n } from "@/i18n/I18nProvider";
+import { categoryLabel } from "@/i18n/categories";
 
 type QRResponse = { token: string; validUntil: string; eventId: string };
+type QRState = { url: string; validUntil: string; eventId: string } | null;
 
 function formatDate(iso: string): string {
   try {
@@ -18,10 +22,6 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
-}
-
-function categoryLabel(c: EventCategory): string {
-  return c.replaceAll("_", " ");
 }
 
 const EVENT_CATEGORIES: EventCategory[] = [
@@ -35,7 +35,30 @@ const EVENT_CATEGORIES: EventCategory[] = [
 
 type EventsResponse = { events: Event[] };
 
+function QRDisplay({ url }: { url: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !url) return;
+    void QRCode.toCanvas(canvas, url, {
+      width: 240,
+      margin: 2,
+      color: { dark: "#0f1117", light: "#f0fdf4" },
+    });
+  }, [url]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="rounded-lg"
+      style={{ display: "block" }}
+    />
+  );
+}
+
 export default function CountryLeadEventsPage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
 
   const [title, setTitle] = useState("");
@@ -46,40 +69,30 @@ export default function CountryLeadEventsPage() {
   const [endsAtLocal, setEndsAtLocal] = useState("");
   const [location, setLocation] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [qrToken, setQrToken] = useState<string | null>(null);
+  const [qrData, setQrData] = useState<QRState>(null);
+  const [loadingQrId, setLoadingQrId] = useState<string | null>(null);
 
   const eventsQuery = useQuery({
     queryKey: ["country-lead", "events"],
     queryFn: async () => {
       const token = window.localStorage.getItem("stellar-orbit.sessionToken");
-      if (!token) {
-        throw new Error("Not signed in");
-      }
+      if (!token) throw new Error(t.validation.notSignedIn);
       return apiFetchWithAuth<EventsResponse>(token, "/events");
     },
   });
 
   const createMutation = useMutation({
-    mutationFn: async (): Promise<{ eventId: string; token: string }> => {
+    mutationFn: async (): Promise<{ url: string; validUntil: string; eventId: string }> => {
       const tokenStore = window.localStorage.getItem("stellar-orbit.sessionToken");
-      if (!tokenStore) {
-        throw new Error("Not signed in");
-      }
+      if (!tokenStore) throw new Error(t.validation.notSignedIn);
 
       const startDay = startsAtLocal.slice(0, 10);
       const endDay = endsAtLocal.slice(0, 10);
-      if (!eventDay.trim()) {
-        throw new Error("Choose an event day.");
-      }
-      if (startDay !== eventDay) {
-        throw new Error("Start date/time must fall on the selected event day.");
-      }
-      if (endDay !== eventDay) {
-        throw new Error("End date/time must fall on the selected event day.");
-      }
-      if (startsAtLocal && endsAtLocal && endsAtLocal <= startsAtLocal) {
-        throw new Error("End time must be after start time.");
-      }
+      if (!eventDay.trim()) throw new Error(t.validation.chooseEventDay);
+      if (startDay !== eventDay) throw new Error(t.validation.startOnEventDay);
+      if (endDay !== eventDay) throw new Error(t.validation.endOnEventDay);
+      if (startsAtLocal && endsAtLocal && endsAtLocal <= startsAtLocal)
+        throw new Error(t.validation.endAfterStart);
 
       const startsAt = new Date(startsAtLocal).toISOString();
       const endsAt = new Date(endsAtLocal).toISOString();
@@ -96,11 +109,9 @@ export default function CountryLeadEventsPage() {
         }),
       });
 
-      const qr = await apiFetchWithAuth<QRResponse>(
-        tokenStore,
-        `/events/${event.id}/qr`,
-      );
-      return { eventId: event.id, token: qr.token };
+      const qr = await apiFetchWithAuth<QRResponse>(tokenStore, `/events/${event.id}/qr`);
+      const checkInUrl = `${window.location.origin}/checkin?token=${encodeURIComponent(qr.token)}`;
+      return { url: checkInUrl, validUntil: qr.validUntil, eventId: event.id };
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["country-lead", "events"] });
@@ -110,192 +121,208 @@ export default function CountryLeadEventsPage() {
   function onSubmit(e: FormEvent) {
     e.preventDefault();
     setSubmitError(null);
-    setQrToken(null);
+    setQrData(null);
     createMutation.mutate(undefined, {
-      onSuccess: ({ token }) => {
-        setQrToken(token);
+      onSuccess: (data) => {
+        setQrData(data);
       },
       onError: (err) => {
-        if (err instanceof ApiError) {
-          setSubmitError(err.message || "Could not create event.");
-        } else if (err instanceof Error) {
-          setSubmitError(err.message);
-        } else {
-          setSubmitError("Could not create event.");
-        }
+        setSubmitError(
+          err instanceof ApiError ? err.message || t.validation.createEventFailed
+          : err instanceof Error ? err.message
+          : t.validation.createEventFailed,
+        );
       },
     });
   }
 
-  async function copyText(value: string) {
-    await navigator.clipboard.writeText(value);
+  async function copyUrl() {
+    if (qrData?.url) await navigator.clipboard.writeText(qrData.url);
   }
 
-  const checkInUrl =
-    typeof window !== "undefined" && qrToken
-      ? `${window.location.origin}/checkin?token=${encodeURIComponent(qrToken)}`
-      : "";
+  async function fetchQrForEvent(eventId: string) {
+    if (loadingQrId) return;
+    setLoadingQrId(eventId);
+    try {
+      const tokenStore = window.localStorage.getItem("stellar-orbit.sessionToken");
+      if (!tokenStore) throw new Error(t.validation.notSignedIn);
+      const qr = await apiFetchWithAuth<QRResponse>(tokenStore, `/events/${eventId}/qr`);
+      const checkInUrl = `${window.location.origin}/checkin?token=${encodeURIComponent(qr.token)}`;
+      setQrData({ url: checkInUrl, validUntil: qr.validUntil, eventId });
+    } catch {
+      // silent: QR may be expired
+    } finally {
+      setLoadingQrId(null);
+    }
+  }
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-10">
       <div>
-        <h1 className="text-2xl font-bold">Events</h1>
-        <p className="mt-1 text-sm text-white/50">
-          Create chapter events and share check-in links with ambassadors.
-        </p>
+        <h1 className="text-2xl font-bold">{t.events.title}</h1>
+        <p className="mt-1 text-sm text-orbit-text-2">{t.events.subtitle}</p>
       </div>
 
       <Card className="flex flex-col gap-4 p-6">
-        <h2 className="text-lg font-semibold">Create event</h2>
+        <h2 className="text-lg font-semibold">{t.events.createEvent}</h2>
         <form className="flex flex-col gap-4" onSubmit={onSubmit}>
-          <label className="flex flex-col gap-1 text-sm font-medium text-white/70">
-            Title
+          <label className="flex flex-col gap-1 text-sm font-medium text-orbit-text-2">
+            {t.events.title_}
             <input
               required
-              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-white focus:outline-none focus:border-orbit-violet/50"
+              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-orbit-text focus:outline-none focus:border-orbit-violet/50"
               value={title}
-              onChange={(event) => {
-                setTitle(event.target.value);
-              }}
+              onChange={(event) => { setTitle(event.target.value); }}
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm font-medium text-white/70">
-            Description (optional)
+          <label className="flex flex-col gap-1 text-sm font-medium text-orbit-text-2">
+            {t.events.description}
             <textarea
-              className="min-h-[6rem] rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-white focus:outline-none focus:border-orbit-violet/50"
+              className="min-h-[6rem] rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-orbit-text focus:outline-none focus:border-orbit-violet/50"
               value={description}
-              onChange={(event) => {
-                setDescription(event.target.value);
-              }}
+              onChange={(event) => { setDescription(event.target.value); }}
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm font-medium text-white/70">
-            Category
+          <label className="flex flex-col gap-1 text-sm font-medium text-orbit-text-2">
+            {t.events.category}
             <select
-              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm capitalize text-white focus:outline-none focus:border-orbit-violet/50"
+              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm capitalize text-orbit-text focus:outline-none focus:border-orbit-violet/50"
               value={category}
-              onChange={(event) => {
-                setCategory(event.target.value as EventCategory);
-              }}
+              onChange={(event) => { setCategory(event.target.value as EventCategory); }}
             >
               {EVENT_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {categoryLabel(c)}
-                </option>
+                <option key={c} value={c}>{categoryLabel(c, t)}</option>
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-sm font-medium text-white/70">
-            Event day
+          <label className="flex flex-col gap-1 text-sm font-medium text-orbit-text-2">
+            {t.events.eventDay}
             <input
               type="date"
               required
-              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-white focus:outline-none focus:border-orbit-violet/50"
+              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-orbit-text focus:outline-none focus:border-orbit-violet/50"
               value={eventDay}
-              onChange={(event) => {
-                setEventDay(event.target.value);
-              }}
+              onChange={(event) => { setEventDay(event.target.value); }}
             />
-            <span className="text-xs font-normal text-white/40">
-              Start and end datetimes below must fall on this day.
-            </span>
+            <span className="text-xs font-normal text-orbit-text-3">{t.events.dayConstraint}</span>
           </label>
-          <label className="flex flex-col gap-1 text-sm font-medium text-white/70">
-            Starts at
+          <label className="flex flex-col gap-1 text-sm font-medium text-orbit-text-2">
+            {t.events.startsAt}
             <input
               type="datetime-local"
               required
-              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-white focus:outline-none focus:border-orbit-violet/50"
+              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-orbit-text focus:outline-none focus:border-orbit-violet/50"
               value={startsAtLocal}
-              onChange={(event) => {
-                setStartsAtLocal(event.target.value);
-              }}
+              onChange={(event) => { setStartsAtLocal(event.target.value); }}
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm font-medium text-white/70">
-            Ends at
+          <label className="flex flex-col gap-1 text-sm font-medium text-orbit-text-2">
+            {t.events.endsAt}
             <input
               type="datetime-local"
               required
-              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-white focus:outline-none focus:border-orbit-violet/50"
+              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-orbit-text focus:outline-none focus:border-orbit-violet/50"
               value={endsAtLocal}
-              onChange={(event) => {
-                setEndsAtLocal(event.target.value);
-              }}
+              onChange={(event) => { setEndsAtLocal(event.target.value); }}
             />
           </label>
-          <label className="flex flex-col gap-1 text-sm font-medium text-white/70">
-            Location (optional)
+          <label className="flex flex-col gap-1 text-sm font-medium text-orbit-text-2">
+            {t.events.location}
             <input
-              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-white focus:outline-none focus:border-orbit-violet/50"
+              className="rounded-lg border border-orbit-border bg-orbit-raised px-3 py-2 text-sm text-orbit-text focus:outline-none focus:border-orbit-violet/50"
               value={location}
-              onChange={(event) => {
-                setLocation(event.target.value);
-              }}
+              onChange={(event) => { setLocation(event.target.value); }}
             />
           </label>
           {submitError ? (
-            <p className="text-sm text-red-400" role="alert">
-              {submitError}
-            </p>
+            <p className="text-sm text-red-400" role="alert">{submitError}</p>
           ) : null}
           <Button type="submit" disabled={createMutation.isPending}>
-            {createMutation.isPending ? "Publishing…" : "Create event"}
+            {createMutation.isPending ? t.events.publishing : t.events.createEvent}
           </Button>
         </form>
 
-        {qrToken ? (
-          <div className="mt-2 rounded-md border border-orbit-success/20 bg-orbit-success/10 p-4 text-sm text-orbit-success">
-            <p className="font-medium">Check-in QR token generated</p>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-orbit-raised p-3 font-mono text-xs ring-1 ring-orbit-success/20">
-              {qrToken}
-            </pre>
-            {checkInUrl ? (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className="break-all font-mono text-xs">{checkInUrl}</span>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => {
-                    void copyText(checkInUrl);
-                  }}
-                >
-                  Copy link
+        {qrData ? (
+          <div className="mt-2 rounded-md border border-orbit-success/20 bg-orbit-success/10 p-6">
+            <p className="font-medium text-orbit-success">{t.events.qrGenerated}</p>
+            <p className="mt-1 text-xs text-orbit-success/70">
+              Valid until {new Date(qrData.validUntil).toLocaleDateString()}. Ambassadors scan this to check in.
+            </p>
+            <div className="mt-4 flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+              <QRDisplay url={qrData.url} />
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-orbit-success/70 break-all font-mono max-w-[280px]">
+                  {qrData.url}
+                </p>
+                <Button type="button" variant="secondary" onClick={() => { void copyUrl(); }}>
+                  {t.events.copyLink}
                 </Button>
               </div>
-            ) : null}
+            </div>
           </div>
         ) : null}
       </Card>
 
       <Card className="flex flex-col gap-4 p-6">
-        <h2 className="text-lg font-semibold">My events</h2>
+        <h2 className="text-lg font-semibold">{t.events.myEvents}</h2>
         {eventsQuery.isLoading ? (
-          <p className="text-sm text-white/50">Loading events…</p>
+          <p className="text-sm text-orbit-text-2">{t.common.loading}</p>
         ) : eventsQuery.isError ? (
-          <p className="text-sm text-red-400">Could not load events.</p>
+          <p className="text-sm text-red-400">{t.common.error}</p>
         ) : !eventsQuery.data?.events?.length ? (
-          <p className="text-sm text-white/50">No events yet.</p>
+          <p className="text-sm text-orbit-text-2">{t.events.noEvents}</p>
         ) : (
           <ul className="flex flex-col gap-3">
             {eventsQuery.data.events.map((evt) => (
-              <li
-                key={evt.id}
-                className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-orbit-border bg-orbit-raised px-4 py-3"
-              >
-                <div>
-                  <p className="font-medium">{evt.title}</p>
-                  <p className="text-xs text-white/50">{formatDate(evt.startsAt)}</p>
-                  <span className="mt-2 inline-flex rounded-full bg-orbit-raised px-2 py-0.5 text-xs font-medium capitalize text-white/60 ring-1 ring-orbit-border">
-                    {categoryLabel(evt.category)}
-                  </span>
+              <li key={evt.id} className="flex flex-col gap-2 rounded-lg border border-orbit-border bg-orbit-raised px-4 py-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-medium">{evt.title}</p>
+                    <p className="text-xs text-orbit-text-2">{formatDate(evt.startsAt)}</p>
+                    <span className="mt-2 inline-flex rounded-full bg-orbit-raised px-2 py-0.5 text-xs font-medium capitalize text-orbit-text-2 ring-1 ring-orbit-border">
+                      {categoryLabel(evt.category, t)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      className="text-sm font-semibold text-orbit-violet-light hover:underline disabled:opacity-50"
+                      disabled={loadingQrId === evt.id}
+                      onClick={() => {
+                        if (qrData?.eventId === evt.id) {
+                          setQrData(null);
+                        } else {
+                          void fetchQrForEvent(evt.id);
+                        }
+                      }}
+                    >
+                      {loadingQrId === evt.id ? t.events.loadingQr : qrData?.eventId === evt.id ? t.events.hideQr : t.events.showQr}
+                    </button>
+                    <Link
+                      href={`/cl/attendance?eventId=${encodeURIComponent(evt.id)}`}
+                      className="text-sm font-semibold text-orbit-violet-light hover:underline"
+                    >
+                      {t.events.viewAttendance}
+                    </Link>
+                  </div>
                 </div>
-                <Link
-                  href={`/cl/attendance?eventId=${encodeURIComponent(evt.id)}`}
-                  className="text-sm font-semibold text-orbit-violet-light hover:underline"
-                >
-                  View attendance
-                </Link>
+
+                {qrData?.eventId === evt.id && (
+                  <div className="rounded-md border border-orbit-success/20 bg-orbit-success/10 p-4">
+                    <p className="text-xs text-orbit-success/70 mb-3">
+                      Valid until {new Date(qrData.validUntil).toLocaleDateString()}.
+                    </p>
+                    <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+                      <QRDisplay url={qrData.url} />
+                      <div className="flex flex-col gap-2">
+                        <p className="text-xs text-orbit-success/70 break-all font-mono max-w-[260px]">{qrData.url}</p>
+                        <Button type="button" variant="secondary" onClick={() => { void copyUrl(); }}>
+                          {t.events.copyLink}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
