@@ -4,9 +4,24 @@ import { db } from "./index.js";
 import { chapters, levels } from "./schema.js";
 
 const chapterSeeds = [
-  { name: "Costa Rica", countryCode: "CR", region: null as string | null },
-  { name: "United States", countryCode: "US", region: null },
-  { name: "Global", countryCode: "GL", region: null },
+  {
+    name: "Costa Rica",
+    countryCode: "CR",
+    region: null as string | null,
+    primaryLanguage: "es" as const,
+  },
+  {
+    name: "United States",
+    countryCode: "US",
+    region: null,
+    primaryLanguage: "en" as const,
+  },
+  {
+    name: "Global",
+    countryCode: "GL",
+    region: null,
+    primaryLanguage: "en" as const,
+  },
 ] as const;
 
 const levelSeeds = [
@@ -27,6 +42,10 @@ async function seedChapters(): Promise<void> {
       where: eq(chapters.countryCode, chapter.countryCode),
     });
     if (existing) {
+      await db
+        .update(chapters)
+        .set({ primaryLanguage: chapter.primaryLanguage })
+        .where(eq(chapters.id, existing.id));
       continue;
     }
 
@@ -34,8 +53,11 @@ async function seedChapters(): Promise<void> {
       name: chapter.name,
       countryCode: chapter.countryCode,
       region: chapter.region,
+      primaryLanguage: chapter.primaryLanguage,
     });
   }
+
+  console.log("[seed] Chapters upserted");
 }
 
 async function seedLevels(): Promise<void> {

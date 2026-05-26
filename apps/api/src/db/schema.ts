@@ -45,6 +45,7 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "event_reminder",
   "chapter_update",
   "system",
+  "account_verified",
 ]);
 
 export const chapters = pgTable("chapters", {
@@ -52,6 +53,7 @@ export const chapters = pgTable("chapters", {
   name: text("name").notNull(),
   countryCode: text("country_code").notNull(),
   region: text("region"),
+  primaryLanguage: text("primary_language").notNull().default("en"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -64,12 +66,10 @@ export const users = pgTable(
     email: text("email"),
     language: text("language").default("en"),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
-    currentTier: levelTierEnum("current_tier").default("explorer").notNull(),
+    currentTier: text("current_tier").default("explorer").notNull(),
     countryCode: text("country_code").notNull(),
     role: roleEnum("role").notNull().default("ambassador"),
-    chapterId: uuid("chapter_id")
-      .references(() => chapters.id)
-      .notNull(),
+    chapterId: uuid("chapter_id").references(() => chapters.id),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -138,7 +138,7 @@ export const levels = pgTable(
   "levels",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    tier: levelTierEnum("tier").notNull(),
+    tier: text("tier").notNull(),
     displayName: text("display_name").notNull(),
     minPoints: integer("min_points").notNull(),
     maxPoints: integer("max_points"),
@@ -146,6 +146,26 @@ export const levels = pgTable(
   },
   (table) => ({
     tierUnique: uniqueIndex("levels_tier_unique").on(table.tier),
+  }),
+);
+
+export const eventRegistrations = pgTable(
+  "event_registrations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    eventId: uuid("event_id")
+      .references(() => events.id)
+      .notNull(),
+    userId: uuid("user_id")
+      .references(() => users.id)
+      .notNull(),
+    registeredAt: timestamp("registered_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    eventUserUnique: uniqueIndex("event_registrations_event_user_unique").on(
+      table.eventId,
+      table.userId,
+    ),
   }),
 );
 
@@ -232,6 +252,21 @@ export const notificationsRelations = relations(notifications, ({ one }) => ({
   }),
 }));
 
+export const eventRegistrationsRelations = relations(eventRegistrations, ({ one }) => ({
+  event: one(events, {
+    fields: [eventRegistrations.eventId],
+    references: [events.id],
+  }),
+  user: one(users, {
+    fields: [eventRegistrations.userId],
+    references: [users.id],
+  }),
+}));
+
+export const eventsRegistrationsRelations = relations(events, ({ many }) => ({
+  registrations: many(eventRegistrations),
+}));
+
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type ChapterRow = typeof chapters.$inferSelect;
@@ -240,3 +275,4 @@ export type AttendanceRow = typeof attendance.$inferSelect;
 export type PointsLedgerRow = typeof pointsLedger.$inferSelect;
 export type LevelRow = typeof levels.$inferSelect;
 export type NotificationRow = typeof notifications.$inferSelect;
+export type EventRegistrationRow = typeof eventRegistrations.$inferSelect;
