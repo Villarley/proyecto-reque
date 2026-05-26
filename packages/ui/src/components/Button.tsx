@@ -7,15 +7,15 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 };
 
 const baseClasses =
-  "inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold tracking-wide transition-all duration-200 disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orbit-violet/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#050507]";
+  "inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-semibold tracking-wide transition-all duration-150 disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orbit-text/20 focus-visible:ring-offset-2 focus-visible:ring-offset-orbit-surface";
 
 const variantClasses: Record<NonNullable<ButtonProps["variant"]>, string> = {
   primary:
-    "[background:linear-gradient(135deg,#7C3AED_0%,#4F46E5_50%,#1DB8C6_100%)] text-white shadow-orbit-sm hover:shadow-orbit-md hover:scale-[1.02] active:scale-[0.98]",
+    "bg-orbit-text text-white shadow-orbit-sm hover:bg-black/85 active:scale-[0.98]",
   secondary:
-    "bg-orbit-surface border border-orbit-border text-orbit-violet-light hover:border-orbit-border-accent hover:bg-orbit-raised hover:shadow-orbit-sm",
+    "bg-white border border-orbit-border text-orbit-text hover:border-orbit-text hover:bg-orbit-raised shadow-orbit-sm",
   ghost:
-    "bg-transparent text-[rgba(244,244,255,0.6)] hover:text-orbit-text hover:bg-[rgba(255,255,255,0.05)]",
+    "bg-transparent text-orbit-text-2 hover:text-orbit-text hover:bg-orbit-raised",
 };
 
 export function Button({
