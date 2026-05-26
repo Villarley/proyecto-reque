@@ -11,6 +11,8 @@ import { profileRoutes } from "./routes/profile.js";
 import { notificationsRoutes } from "./routes/notifications.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import { leaderboardRoutes } from "./routes/leaderboard.js";
+import { adminRoutes } from "./routes/admin.js";
+import { chaptersRoutes } from "./routes/chapters.js";
 
 const app = new Hono();
 
@@ -26,6 +28,7 @@ app.use(
 app.get("/health", (c) => c.json({ ok: true, service: "stellar-orbit-api" }));
 
 app.route("/auth", authRoutes);
+app.route("/chapters", chaptersRoutes);
 app.route("/events", eventsRoutes);
 app.route("/levels", levelsRoutes);
 app.route("/points", pointsRoutes);
@@ -33,6 +36,7 @@ app.route("/profile", profileRoutes);
 app.route("/notifications", notificationsRoutes);
 app.route("/analytics", analyticsRoutes);
 app.route("/leaderboard", leaderboardRoutes);
+app.route("/admin", adminRoutes);
 
 serve({
   fetch: app.fetch,
