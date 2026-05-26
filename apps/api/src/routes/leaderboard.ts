@@ -5,7 +5,7 @@ import { desc, eq, sql } from "drizzle-orm";
 import { zValidator } from "@hono/zod-validator";
 import type { LeaderboardEntry } from "@stellar-orbit/types";
 import type { AppVariables } from "../middleware/auth.js";
-import { requireAuth } from "../middleware/auth.js";
+import { getRequiredChapterId, requireAuth, requireChapter } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { chapters, levels, pointsLedger, users } from "../db/schema.js";
 import { tierForTotalPoints } from "../lib/tiers.js";
@@ -17,35 +17,36 @@ const scopeSchema = z.object({
 
 export const leaderboardRoutes = new Hono<{ Variables: AppVariables }>()
   .use("*", requireAuth)
-  .get("/", zValidator("query", scopeSchema), async (c) => {
+  .get("/", requireChapter, zValidator("query", scopeSchema), async (c) => {
     const session = c.get("session");
+    const sessionChapterId = getRequiredChapterId(session);
     const { scope, chapterId: chapterIdQuery } = c.req.valid("query");
 
     let filter: SQL | undefined;
 
     if (scope === "chapter") {
-      const targetChapter = chapterIdQuery ?? session.chapterId;
+      const targetChapter = chapterIdQuery ?? sessionChapterId;
       if (
         session.role === "ambassador" &&
-        targetChapter !== session.chapterId
+        targetChapter !== sessionChapterId
       ) {
         return c.json({ error: "forbidden" }, 403);
       }
       if (
         session.role === "country_lead" &&
-        targetChapter !== session.chapterId
+        targetChapter !== sessionChapterId
       ) {
         return c.json({ error: "forbidden" }, 403);
       }
       filter = eq(users.chapterId, targetChapter);
     } else if (scope === "regional") {
       const home = await db.query.chapters.findFirst({
-        where: eq(chapters.id, session.chapterId),
+        where: eq(chapters.id, sessionChapterId),
       });
       if (home?.region) {
         filter = eq(chapters.region, home.region);
       } else {
-        filter = eq(users.chapterId, session.chapterId);
+        filter = eq(users.chapterId, sessionChapterId);
       }
     } else {
       filter = undefined;
@@ -78,7 +79,9 @@ export const leaderboardRoutes = new Hono<{ Variables: AppVariables }>()
       .orderBy(desc(sql`coalesce(sum(${pointsLedger.delta}), 0)`))
       .limit(200);
 
-    const leaderboard: LeaderboardEntry[] = rows.map((row, idx) => ({
+    const leaderboard: LeaderboardEntry[] = rows
+      .filter((row): row is typeof row & { chapterId: string } => row.chapterId !== null)
+      .map((row, idx) => ({
       rank: idx + 1,
       userId: row.userId,
       stellarPublicKey: row.stellarPublicKey,

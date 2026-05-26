@@ -98,7 +98,10 @@ export const analyticsRoutes = new Hono<{ Variables: AppVariables }>()
 
     for (const row of userTotals) {
       const computedTier = tierForTotalPoints(row.points, levelsDescending);
-      levelDistributionByComputedTier[computedTier] += 1;
+      const bucket = levelDistributionByComputedTier[computedTier];
+      if (bucket !== undefined) {
+        levelDistributionByComputedTier[computedTier] = bucket + 1;
+      }
     }
 
     const verifiedWhereParts = chapterId
@@ -189,6 +192,44 @@ export const analyticsRoutes = new Hono<{ Variables: AppVariables }>()
     const repeatAttendanceRate =
       attendeesWithOnePlus === 0 ? null : repeatAttendees / attendeesWithOnePlus;
 
+    const lifecycleChapterFilter = chapterId
+      ? sql`AND ${events.chapterId} = ${chapterId}`
+      : sql``;
+
+    const [lifecycleRow] = await db.execute<{ avg_days: string | null }>(sql`
+      WITH ranked AS (
+        SELECT
+          ${attendance.userId} AS user_id,
+          ${attendance.checkedInAt} AS checked_in_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY ${attendance.userId}
+            ORDER BY ${attendance.checkedInAt} ASC
+          ) AS rn
+        FROM ${attendance}
+        INNER JOIN ${events} ON ${attendance.eventId} = ${events.id}
+        WHERE 1 = 1 ${lifecycleChapterFilter}
+      ),
+      pairs AS (
+        SELECT
+          user_id,
+          MAX(checked_in_at) FILTER (WHERE rn = 1) AS first_at,
+          MAX(checked_in_at) FILTER (WHERE rn = 2) AS second_at
+        FROM ranked
+        WHERE rn <= 2
+        GROUP BY user_id
+        HAVING COUNT(*) >= 2
+      )
+      SELECT AVG(
+        EXTRACT(EPOCH FROM (second_at - first_at)) / 86400.0
+      )::float AS avg_days
+      FROM pairs
+    `);
+
+    const avgDaysBetweenFirstAndSecondEvent =
+      lifecycleRow?.avg_days === null || lifecycleRow?.avg_days === undefined
+        ? null
+        : Number(lifecycleRow.avg_days);
+
     const chaptersForComparison = chapterId
       ? await db.query.chapters.findMany({ where: eq(chapters.id, chapterId) })
       : await db.query.chapters.findMany({ orderBy: [asc(chapters.name)] });
@@ -278,6 +319,7 @@ export const analyticsRoutes = new Hono<{ Variables: AppVariables }>()
         eventsByCategory: eventsByCategoryRows,
         averageAttendancePerEvent: avgAttendancePerEvent,
         repeatAttendanceRate,
+        avgDaysBetweenFirstAndSecondEvent,
         engagementByChapter: chapterComparison,
       },
     });

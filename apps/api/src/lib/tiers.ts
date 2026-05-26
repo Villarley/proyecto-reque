@@ -1,7 +1,6 @@
 import type { LevelTier } from "@stellar-orbit/types";
 import type { LevelRow } from "../db/schema.js";
 
-/** Canonical progression order used for validations and comparisons. */
 export const LEVEL_TIER_ORDER: LevelTier[] = [
   "explorer",
   "stellar_pioneer",
@@ -10,11 +9,11 @@ export const LEVEL_TIER_ORDER: LevelTier[] = [
   "ecosystem_leader",
 ];
 
-export function tierRank(tier: LevelTier): number {
-  return LEVEL_TIER_ORDER.indexOf(tier);
+export function tierRank(tier: LevelTier, tiers: LevelTier[] = LEVEL_TIER_ORDER): number {
+  return tiers.indexOf(tier);
 }
 
-/** `levelsDescending` ordered by minPoints descending (prefer highest threshold first). */
+/** Returns the tier label matching the highest threshold the user has reached. */
 export function tierForTotalPoints(
   totalPoints: number,
   levelsDescending: LevelRow[],
@@ -24,10 +23,14 @@ export function tierForTotalPoints(
       return row.tier;
     }
   }
-  return "explorer";
+  return levelsDescending.at(-1)?.tier ?? "explorer";
 }
 
-/** Returns true iff `candidate` tier is strictly above `baseline`. */
-export function isHigherTier(candidate: LevelTier, baseline: LevelTier): boolean {
-  return tierRank(candidate) > tierRank(baseline);
+export function isHigherTier(
+  candidate: LevelTier,
+  baseline: LevelTier,
+  allTiers?: LevelTier[],
+): boolean {
+  const ord = allTiers ?? LEVEL_TIER_ORDER;
+  return ord.indexOf(candidate) > ord.indexOf(baseline);
 }

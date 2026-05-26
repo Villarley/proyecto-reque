@@ -1,8 +1,8 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { asc, desc, eq, sql } from "drizzle-orm";
 import type { LevelTier } from "@stellar-orbit/types";
 import type { Database } from "../db/index.js";
 import { levels, pointsLedger, users } from "../db/schema.js";
-import { isHigherTier, tierForTotalPoints } from "../lib/tiers.js";
+import { tierForTotalPoints } from "../lib/tiers.js";
 
 export async function autoPromoteLevel(
   db: Database,
@@ -17,10 +17,8 @@ export async function autoPromoteLevel(
 
   const totalPoints = sumRow?.total ?? 0;
 
-  const levelRows = await db
-    .select()
-    .from(levels)
-    .orderBy(desc(levels.minPoints));
+  const levelRows = await db.select().from(levels).orderBy(desc(levels.minPoints));
+  const levelRowsAsc = await db.select().from(levels).orderBy(asc(levels.minPoints));
 
   const nextTier = tierForTotalPoints(totalPoints, levelRows);
 
@@ -29,12 +27,12 @@ export async function autoPromoteLevel(
     where: eq(users.id, userId),
   });
 
-  if (!user) {
-    return { promoted: false };
-  }
+  if (!user) return { promoted: false };
 
-  const currentStored = user.currentTier;
-  if (!isHigherTier(nextTier, currentStored)) {
+  const currentMinPoints = levelRowsAsc.find((l) => l.tier === user.currentTier)?.minPoints ?? -1;
+  const nextMinPoints = levelRowsAsc.find((l) => l.tier === nextTier)?.minPoints ?? 0;
+
+  if (nextMinPoints <= currentMinPoints) {
     return { promoted: false };
   }
 
