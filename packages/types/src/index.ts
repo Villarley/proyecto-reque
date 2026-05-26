@@ -5,7 +5,7 @@ export type User = {
   stellarPublicKey: string;
   email: string | null;
   role: Role;
-  chapterId: string;
+  chapterId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -16,13 +16,37 @@ export type CountryLead = User & { role: "country_lead" };
 
 export type GlobalAdmin = User & { role: "global_admin" };
 
+export type ProfileLanguage = "en" | "es" | "pt";
+
 export type Chapter = {
   id: string;
   name: string;
   countryCode: string;
   region: string | null;
+  primaryLanguage: ProfileLanguage;
   createdAt: string;
 };
+
+export type ChapterAssignmentStatus = "assigned" | "needs_selection";
+
+export type ChapterResolveDirect = {
+  match: "direct";
+  chapter: Chapter;
+};
+
+export type ChapterResolveSuggestions = {
+  match: "suggestions";
+  suggestions: Chapter[];
+};
+
+export type ChapterResolveNone = {
+  match: "none";
+};
+
+export type ChapterResolveResponse =
+  | ChapterResolveDirect
+  | ChapterResolveSuggestions
+  | ChapterResolveNone;
 
 export type EventCategory =
   | "meetup"
@@ -70,12 +94,7 @@ export type PointsLedgerEntry = {
   createdAt: string;
 };
 
-export type LevelTier =
-  | "explorer"
-  | "stellar_pioneer"
-  | "orbit_builder"
-  | "nova_ambassador"
-  | "ecosystem_leader";
+export type LevelTier = string;
 
 export type Level = {
   id: string;
@@ -91,7 +110,8 @@ export type NotificationType =
   | "level_up"
   | "event_reminder"
   | "chapter_update"
-  | "system";
+  | "system"
+  | "account_verified";
 
 export type Notification = {
   id: string;
@@ -171,5 +191,6 @@ export type AnalyticsDashboard = {
   eventsByCategory: AnalyticsCategoryBucket[];
   averageAttendancePerEvent: number | null;
   repeatAttendanceRate: number | null;
+  avgDaysBetweenFirstAndSecondEvent: number | null;
   engagementByChapter: AnalyticsChapterEngagementRow[];
 };
