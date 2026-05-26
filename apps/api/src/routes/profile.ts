@@ -1,11 +1,16 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { and, asc, desc, eq, gte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, ne, or, sql } from "drizzle-orm";
 import { zValidator } from "@hono/zod-validator";
 import type { AppVariables } from "../middleware/auth.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { attendance, chapters, events, levels, pointsLedger, users } from "../db/schema.js";
+import {
+  isChapterIdAllowed,
+  resolveChapterForUser,
+} from "../lib/chapter-resolve.js";
+import { profileLanguageForUser } from "../lib/notification-copy.js";
 import { tierForTotalPoints } from "../lib/tiers.js";
 
 const chapterMembersQuerySchema = z.object({
@@ -15,8 +20,10 @@ const chapterMembersQuerySchema = z.object({
 const patchProfileSchema = z
   .object({
     name: z.string().min(1).max(200).nullable().optional(),
-    email: z.string().email().nullable().optional(),
-    language: z.string().min(2).max(32).nullable().optional(),
+    email: z.string().email().optional(),
+    countryCode: z.string().length(2).toUpperCase().optional(),
+    language: z.enum(["en", "es", "pt"]).optional(),
+    chapterId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -57,16 +64,19 @@ export const profileRoutes = new Hono<{ Variables: AppVariables }>()
 
     const currentTier = tierForTotalPoints(totalPoints, levelRows);
 
-    const upcomingEvents = await db.query.events.findMany({
-      where: and(
-        eq(events.chapterId, userRow.chapterId),
-        gte(events.startsAt, new Date()),
-      ),
-      orderBy: [asc(events.startsAt)],
-      limit: 5,
-    });
+    const upcomingEvents = userRow.chapterId
+      ? await db.query.events.findMany({
+          where: and(
+            eq(events.chapterId, userRow.chapterId),
+            gte(events.startsAt, new Date()),
+          ),
+          orderBy: [asc(events.startsAt)],
+          limit: 5,
+        })
+      : [];
 
     const { attendance: attendanceHistory, chapter, ...rest } = userRow;
+    const chapterAssignmentStatus = userRow.chapterId ? "assigned" : "needs_selection";
 
     return c.json({
       user: { ...rest, chapter },
@@ -74,6 +84,8 @@ export const profileRoutes = new Hono<{ Variables: AppVariables }>()
       currentTier,
       eventHistory: attendanceHistory,
       upcomingEvents,
+      chapterAssignmentStatus,
+      profileComplete: !!(rest.name && rest.email && userRow.chapterId),
     });
   })
   .get(
@@ -82,6 +94,10 @@ export const profileRoutes = new Hono<{ Variables: AppVariables }>()
     zValidator("query", chapterMembersQuerySchema),
     async (c) => {
       const session = c.get("session");
+      if (!session.chapterId) {
+        return c.json({ error: "chapter_required" }, 403);
+      }
+
       const query = c.req.valid("query");
       const targetChapterId =
         session.role === "global_admin" && query.chapterId
@@ -117,6 +133,42 @@ export const profileRoutes = new Hono<{ Variables: AppVariables }>()
       });
     },
   )
+  .get(
+    "/users/search",
+    requireRole(["country_lead", "global_admin"]),
+    zValidator("query", z.object({ q: z.string().optional() })),
+    async (c) => {
+      const { q } = c.req.valid("query");
+      const needle = q?.trim();
+
+      const whereClause =
+        needle
+          ? or(
+              ilike(users.stellarPublicKey, `%${needle}%`),
+              ilike(users.name, `%${needle}%`),
+              ilike(users.email, `%${needle}%`),
+            )
+          : undefined;
+
+      const rows = await db
+        .select({
+          id: users.id,
+          stellarPublicKey: users.stellarPublicKey,
+          name: users.name,
+          email: users.email,
+          verifiedAt: users.verifiedAt,
+          chapterId: users.chapterId,
+          chapterName: chapters.name,
+        })
+        .from(users)
+        .leftJoin(chapters, eq(users.chapterId, chapters.id))
+        .where(whereClause)
+        .orderBy(asc(users.name))
+        .limit(100);
+
+      return c.json({ users: rows });
+    },
+  )
   .patch("/me", zValidator("json", patchProfileSchema), async (c) => {
     const session = c.get("session");
     const body = c.req.valid("json");
@@ -129,6 +181,13 @@ export const profileRoutes = new Hono<{ Variables: AppVariables }>()
       if (emailTaken) {
         return c.json({ error: "email_taken" }, 409);
       }
+    }
+
+    const current = await db.query.users.findFirst({
+      where: eq(users.id, session.sub),
+    });
+    if (!current) {
+      return c.json({ error: "not_found" }, 404);
     }
 
     const patch: Partial<typeof users.$inferInsert> = {
@@ -147,6 +206,34 @@ export const profileRoutes = new Hono<{ Variables: AppVariables }>()
       patch.language = body.language;
     }
 
+    const nextCountryCode = body.countryCode ?? current.countryCode;
+    const nextLanguage =
+      body.language ?? profileLanguageForUser(current);
+
+    if (body.countryCode) {
+      patch.countryCode = body.countryCode.toUpperCase();
+    }
+
+    const countryOrLanguageChanged = Boolean(body.countryCode || body.language);
+
+    if (countryOrLanguageChanged || body.chapterId !== undefined) {
+      const resolution = await resolveChapterForUser(db, {
+        countryCode: nextCountryCode,
+        language: nextLanguage,
+      });
+
+      if (resolution.match === "direct") {
+        patch.chapterId = resolution.chapter.id;
+      } else if (body.chapterId !== undefined) {
+        if (!isChapterIdAllowed(body.chapterId, resolution)) {
+          return c.json({ error: "invalid_chapter" }, 400);
+        }
+        patch.chapterId = body.chapterId;
+      } else if (countryOrLanguageChanged) {
+        patch.chapterId = null;
+      }
+    }
+
     const [updated] = await db
       .update(users)
       .set(patch)
@@ -157,5 +244,11 @@ export const profileRoutes = new Hono<{ Variables: AppVariables }>()
       return c.json({ error: "not_found" }, 404);
     }
 
-    return c.json({ user: updated });
+    const chapterAssignmentStatus = updated.chapterId ? "assigned" : "needs_selection";
+
+    return c.json({
+      user: updated,
+      chapterAssignmentStatus,
+      profileComplete: !!(updated.name && updated.email && updated.chapterId),
+    });
   });
