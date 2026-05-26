@@ -3,12 +3,19 @@ import { z } from "zod";
 import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { zValidator } from "@hono/zod-validator";
 import type { AppVariables } from "../middleware/auth.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import {
+  getRequiredChapterId,
+  requireAuth,
+  requireChapter,
+  requireRole,
+} from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { notifications, users } from "../db/schema.js";
-import { sendNotificationEmail } from "../lib/notifications.js";
+import { sendAnnouncementEmail, sendNotificationEmail } from "../lib/notifications.js";
 
 const announcementSchema = z.object({
+  subject: z.string().min(1).max(200).optional(),
+  title: z.string().min(1).max(200).optional(),
   message: z.string().min(1).max(8000),
   audience: z.enum(["all", "verified"]),
 });
@@ -17,19 +24,23 @@ export const notificationsRoutes = new Hono<{ Variables: AppVariables }>()
   .use("*", requireAuth)
   .post(
     "/announcement",
+    requireChapter,
     requireRole(["country_lead"]),
     zValidator("json", announcementSchema),
     async (c) => {
       const session = c.get("session");
-      const { message, audience } = c.req.valid("json");
+      const sessionChapterId = getRequiredChapterId(session);
+      const { message, audience, title, subject } = c.req.valid("json");
+      const announcementTitle = title ?? "Chapter Announcement";
+      const announcementSubject = subject ?? announcementTitle;
 
       const recipientsWhere =
         audience === "verified"
           ? and(
-              eq(users.chapterId, session.chapterId),
+              eq(users.chapterId, sessionChapterId),
               isNotNull(users.verifiedAt),
             )
-          : eq(users.chapterId, session.chapterId);
+          : eq(users.chapterId, sessionChapterId);
 
       const recipients = await db.query.users.findMany({
         columns: {
@@ -39,14 +50,12 @@ export const notificationsRoutes = new Hono<{ Variables: AppVariables }>()
         where: recipientsWhere,
       });
 
-      const title = "Chapter announcement";
-
       if (recipients.length > 0) {
         await db.insert(notifications).values(
           recipients.map((r) => ({
             userId: r.id,
             type: "chapter_update" as const,
-            title,
+            title: announcementTitle,
             body: message,
           })),
         );
@@ -54,10 +63,11 @@ export const notificationsRoutes = new Hono<{ Variables: AppVariables }>()
 
       for (const recipient of recipients) {
         if (recipient.email) {
-          void sendNotificationEmail({
+          void sendAnnouncementEmail({
             to: recipient.email,
-            subject: title,
-            text: message,
+            subject: announcementSubject,
+            title: announcementTitle,
+            description: message,
           }).catch((err: unknown) => {
             console.error(
               "[announcement-email] failed",
