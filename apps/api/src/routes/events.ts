@@ -3,10 +3,15 @@ import { z } from "zod";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { zValidator } from "@hono/zod-validator";
 import type { AppVariables } from "../middleware/auth.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import {
+  getRequiredChapterId,
+  requireAuth,
+  requireChapter,
+  requireRole,
+} from "../middleware/auth.js";
 import { env } from "../env.js";
 import { db } from "../db/index.js";
-import { attendance, events, pointsLedger, users } from "../db/schema.js";
+import { attendance, eventRegistrations, events, pointsLedger, users } from "../db/schema.js";
 import {
   assertTokenActive,
   createEventCheckInToken,
@@ -15,6 +20,11 @@ import {
 } from "../lib/qr.js";
 import { autoPromoteLevel } from "../services/level-promotion.js";
 import { dispatchNotification } from "../services/notification-dispatch.js";
+import { checkRateLimit, clientIpFromRequest } from "../lib/rate-limit.js";
+import {
+  accountVerifiedNotificationCopy,
+  profileLanguageForUser,
+} from "../lib/notification-copy.js";
 
 const listQuerySchema = z.object({
   chapterId: z.string().uuid().optional(),
@@ -41,8 +51,9 @@ const patchEventSchema = createEventSchema.partial();
 
 export const eventsRoutes = new Hono<{ Variables: AppVariables }>()
   .use("*", requireAuth)
-  .get("/", zValidator("query", listQuerySchema), async (c) => {
+  .get("/", requireChapter, zValidator("query", listQuerySchema), async (c) => {
     const session = c.get("session");
+    const sessionChapterId = getRequiredChapterId(session);
     const { chapterId } = c.req.valid("query");
 
     if (session.role === "global_admin") {
@@ -55,17 +66,42 @@ export const eventsRoutes = new Hono<{ Variables: AppVariables }>()
 
     if (session.role === "country_lead") {
       const rows = await db.query.events.findMany({
-        where: eq(events.chapterId, session.chapterId),
+        where: eq(events.chapterId, sessionChapterId),
         orderBy: [desc(events.startsAt)],
       });
       return c.json({ events: rows });
     }
 
     const rows = await db.query.events.findMany({
-      where: eq(events.chapterId, session.chapterId),
+      where: eq(events.chapterId, sessionChapterId),
       orderBy: [asc(events.startsAt)],
     });
     return c.json({ events: rows });
+  })
+  .get("/my-registrations", async (c) => {
+    const session = c.get("session");
+
+    const regs = await db.query.eventRegistrations.findMany({
+      where: eq(eventRegistrations.userId, session.sub),
+    });
+
+    return c.json({ registeredEventIds: regs.map((r) => r.eventId) });
+  })
+  .get("/my-attendance", async (c) => {
+    const session = c.get("session");
+
+    const rows = await db.query.attendance.findMany({
+      columns: {
+        eventId: true,
+        checkedInAt: true,
+      },
+      where: eq(attendance.userId, session.sub),
+    });
+
+    return c.json({
+      checkedInEventIds: rows.map((row) => row.eventId),
+      attendance: rows,
+    });
   })
   .post(
     "/",
@@ -272,6 +308,17 @@ export const eventsRoutes = new Hono<{ Variables: AppVariables }>()
       const session = c.get("session");
       const { token } = c.req.valid("json");
 
+      const clientIp = clientIpFromRequest(c.req.header("x-forwarded-for"));
+      if (
+        !checkRateLimit(`checkin:ip:${clientIp}`, env.CHECKIN_RATE_LIMIT_IP_PER_MIN) ||
+        !checkRateLimit(
+          `checkin:wallet:${session.sub}`,
+          env.CHECKIN_RATE_LIMIT_WALLET_PER_MIN,
+        )
+      ) {
+        return c.json({ error: "rate_limited" }, 429);
+      }
+
       const event = await db.query.events.findFirst({ where: eq(events.id, id) });
       if (!event) {
         return c.json({ error: "not_found" }, 404);
@@ -306,6 +353,8 @@ export const eventsRoutes = new Hono<{ Variables: AppVariables }>()
         columns: {
           verifiedAt: true,
           email: true,
+          language: true,
+          countryCode: true,
         },
         where: eq(users.id, session.sub),
       });
@@ -342,6 +391,19 @@ export const eventsRoutes = new Hono<{ Variables: AppVariables }>()
         where: eq(users.id, session.sub),
       });
 
+      if (actorBefore.verifiedAt === null) {
+        const verifiedCopy = accountVerifiedNotificationCopy(
+          profileLanguageForUser(actorBefore),
+        );
+        await dispatchNotification(db, {
+          userId: session.sub,
+          type: "account_verified",
+          title: verifiedCopy.title,
+          body: verifiedCopy.body,
+          email: refreshedActor?.email ?? actorBefore.email ?? undefined,
+        });
+      }
+
       await dispatchNotification(db, {
         userId: session.sub,
         type: "system",
@@ -366,4 +428,84 @@ export const eventsRoutes = new Hono<{ Variables: AppVariables }>()
         promoted: promote.promoted,
       });
     },
-  );
+  )
+  .get("/:id/registration", async (c) => {
+    const id = c.req.param("id");
+    const session = c.get("session");
+
+    const reg = await db.query.eventRegistrations.findFirst({
+      where: and(
+        eq(eventRegistrations.eventId, id),
+        eq(eventRegistrations.userId, session.sub),
+      ),
+    });
+
+    return c.json({ registered: !!reg, registeredAt: reg?.registeredAt ?? null });
+  })
+  .post("/:id/register", async (c) => {
+    const id = c.req.param("id");
+    const session = c.get("session");
+
+    const event = await db.query.events.findFirst({ where: eq(events.id, id) });
+    if (!event) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    if (event.chapterId !== session.chapterId) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+
+    const existing = await db.query.eventRegistrations.findFirst({
+      where: and(
+        eq(eventRegistrations.eventId, id),
+        eq(eventRegistrations.userId, session.sub),
+      ),
+    });
+    if (existing) {
+      return c.json({ error: "already_registered" }, 409);
+    }
+
+    const [reg] = await db
+      .insert(eventRegistrations)
+      .values({ eventId: id, userId: session.sub })
+      .returning();
+
+    const actor = await db.query.users.findFirst({
+      columns: { email: true, name: true },
+      where: eq(users.id, session.sub),
+    });
+
+    await dispatchNotification(db, {
+      userId: session.sub,
+      type: "event_reminder",
+      title: `Registered: ${event.title}`,
+      body: `You're registered for ${event.title}. Remember to check in on the day of the event!`,
+      email: actor?.email ?? undefined,
+    });
+
+    return c.json({ registration: reg }, 201);
+  })
+  .delete("/:id/register", async (c) => {
+    const id = c.req.param("id");
+    const session = c.get("session");
+
+    const existing = await db.query.eventRegistrations.findFirst({
+      where: and(
+        eq(eventRegistrations.eventId, id),
+        eq(eventRegistrations.userId, session.sub),
+      ),
+    });
+    if (!existing) {
+      return c.json({ error: "not_registered" }, 404);
+    }
+
+    await db
+      .delete(eventRegistrations)
+      .where(
+        and(
+          eq(eventRegistrations.eventId, id),
+          eq(eventRegistrations.userId, session.sub),
+        ),
+      );
+
+    return c.body(null, 204);
+  });
