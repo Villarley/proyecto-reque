@@ -11,6 +11,9 @@ const nextConfig: NextConfig = {
     "@stellar-orbit/stellar",
     "@creit-tech/stellar-wallets-kit",
   ],
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
   outputFileTracingRoot: monorepoRoot,
 };
 

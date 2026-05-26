@@ -1,31 +1,48 @@
 "use client";
 
-import {
-  WalletKitSingleton,
-  connectWallet,
-  ensureWalletKitSingletonReady,
-  signChallenge,
-} from "@stellar-orbit/stellar";
+type StellarModule = typeof import("@stellar-orbit/stellar");
 
-export { WalletKitSingleton as walletKit };
+let stellarModulePromise: Promise<StellarModule> | null = null;
+let lastWalletLabel = "Wallet";
+
+function loadStellarModule(): Promise<StellarModule> {
+  if (!stellarModulePromise) {
+    stellarModulePromise = import("@stellar-orbit/stellar");
+  }
+  return stellarModulePromise;
+}
+
+function ensureBrowser(action: string): void {
+  if (typeof window === "undefined") {
+    throw new Error(`${action} must run in the browser.`);
+  }
+}
+
+function updateWalletLabel(module: StellarModule): void {
+  try {
+    lastWalletLabel = module.WalletKitSingleton.selectedModule.productName;
+  } catch {
+    lastWalletLabel = "Wallet";
+  }
+}
 
 export async function connect(): Promise<string> {
-  if (typeof window === "undefined") {
-    throw new Error("Connect wallet must run in the browser.");
-  }
-  ensureWalletKitSingletonReady();
-  return connectWallet(WalletKitSingleton);
+  ensureBrowser("Connect wallet");
+  const module = await loadStellarModule();
+  module.ensureWalletKitSingletonReady();
+  const address = await module.connectWallet(module.WalletKitSingleton);
+  updateWalletLabel(module);
+  return address;
 }
 
 export async function signChallengeMessage(
   message: string,
   address?: string,
 ): Promise<string> {
-  if (typeof window === "undefined") {
-    throw new Error("Sign challenge must run in the browser.");
-  }
-  ensureWalletKitSingletonReady();
-  return signChallenge(WalletKitSingleton, message, address);
+  ensureBrowser("Sign challenge");
+  const module = await loadStellarModule();
+  module.ensureWalletKitSingletonReady();
+  return module.signChallenge(module.WalletKitSingleton, message, address);
 }
 
 export function disconnect(): void {
@@ -34,23 +51,21 @@ export function disconnect(): void {
   }
   window.localStorage.removeItem("stellar-orbit.sessionToken");
   window.localStorage.removeItem("stellar-orbit.publicKey");
-  void WalletKitSingleton.disconnect().catch(() => {});
+  lastWalletLabel = "Wallet";
+  void loadStellarModule()
+    .then((module) => module.WalletKitSingleton.disconnect())
+    .catch(() => {});
 }
 
 export async function readPublicKey(): Promise<string> {
-  if (typeof window === "undefined") {
-    throw new Error("readPublicKey must run in the browser.");
-  }
-  ensureWalletKitSingletonReady();
-  const { address } = await WalletKitSingleton.getAddress();
+  ensureBrowser("readPublicKey");
+  const module = await loadStellarModule();
+  module.ensureWalletKitSingletonReady();
+  const { address } = await module.WalletKitSingleton.getAddress();
+  updateWalletLabel(module);
   return address;
 }
 
-/** Best-effort label from the active kit module after a successful connection. */
 export function getConnectedWalletLabel(): string {
-  try {
-    return WalletKitSingleton.selectedModule.productName;
-  } catch {
-    return "Wallet";
-  }
+  return lastWalletLabel;
 }
