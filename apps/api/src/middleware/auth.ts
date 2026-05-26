@@ -8,7 +8,7 @@ const claimsSchema = z.object({
   sub: z.string().uuid(),
   stellarPublicKey: z.string().min(1),
   role: z.enum(["ambassador", "country_lead", "global_admin"]),
-  chapterId: z.string().uuid(),
+  chapterId: z.string().uuid().optional(),
 });
 
 export type SessionClaims = z.infer<typeof claimsSchema>;
@@ -20,11 +20,14 @@ export type AppVariables = {
 export async function signSessionToken(claims: SessionClaims): Promise<string> {
   const { SignJWT } = await import("jose");
   const secret = new TextEncoder().encode(env.JWT_SECRET);
-  return new SignJWT({
+  const payload: Record<string, string> = {
     stellarPublicKey: claims.stellarPublicKey,
     role: claims.role,
-    chapterId: claims.chapterId,
-  })
+  };
+  if (claims.chapterId) {
+    payload["chapterId"] = claims.chapterId;
+  }
+  return new SignJWT(payload)
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(claims.sub)
     .setIssuedAt()
@@ -73,3 +76,20 @@ export function requireRole(roles: Role[]) {
     await next();
   });
 }
+
+export function getRequiredChapterId(session: SessionClaims): string {
+  if (!session.chapterId) {
+    throw new Error("chapter_required");
+  }
+  return session.chapterId;
+}
+
+export const requireChapter = createMiddleware<{ Variables: AppVariables }>(
+  async (c, next) => {
+    const session = c.get("session");
+    if (!session.chapterId) {
+      return c.json({ error: "chapter_required" }, 403);
+    }
+    await next();
+  },
+);
