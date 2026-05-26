@@ -10,7 +10,7 @@ import {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- referenced via requireAuth; kept as explicit middleware import
   verifySessionToken,
 } from "../middleware/auth.js";
-import { resolveChapterIdForCountry } from "../lib/chapters.js";
+import { findChapterByCountry } from "../lib/chapter-resolve.js";
 
 const selectRoleBodySchema = z.object({
   role: z.enum(["ambassador", "country_lead", "global_admin"]),
@@ -50,16 +50,15 @@ export const authRoutes = new Hono()
       let chapterId = existing?.chapterId;
 
       if (!existing) {
-        if (!body.countryCode) {
-          return c.json({ error: "country_required_for_new_users" }, 400);
-        }
-        chapterId = await resolveChapterIdForCountry(db, body.countryCode);
+        const effectiveCountry = (body.countryCode ?? "US").trim().toUpperCase();
+        const directChapter = await findChapterByCountry(db, effectiveCountry);
+        chapterId = directChapter?.id ?? null;
         const [created] = await db
           .insert(users)
           .values({
             stellarPublicKey: body.publicKey,
             email: body.email ?? null,
-            countryCode: body.countryCode.trim().toUpperCase(),
+            countryCode: effectiveCountry,
             chapterId,
             role: "ambassador",
           })
@@ -80,18 +79,15 @@ export const authRoutes = new Hono()
         }
       }
 
-      if (!chapterId) {
-        return c.json({ error: "missing_chapter" }, 500);
-      }
-
       const token = await signSessionToken({
         sub: userId,
         stellarPublicKey: body.publicKey,
         role,
-        chapterId,
+        ...(chapterId ? { chapterId } : {}),
       });
 
-      return c.json({ token, userId, role, chapterId });
+      const isNewUser = !existing;
+      return c.json({ token, userId, role, chapterId: chapterId ?? null, isNewUser });
     },
   )
   .post(
